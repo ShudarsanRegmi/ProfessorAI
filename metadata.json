@@ -1,0 +1,7 @@
+{
+  "name": "Copy of ProfessorAI - Assignment Evaluator",
+  "description": "An intelligent assistant for university faculty to create rubrics, transcribe notes, and grade student PDF submissions using Gemini 2.5 and 3 Pro multimodal capabilities.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
