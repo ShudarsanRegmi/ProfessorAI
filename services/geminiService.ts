@@ -11,9 +11,20 @@ const filePart = (base64Data: string, mimeType: string) => ({
   },
 });
 
-// Helper to clean JSON output (strip markdown)
+// Helper to clean JSON output (strip markdown and locate JSON object)
 const cleanJson = (text: string) => {
-  return text.replace(/^```json\s*/, '').replace(/^```\s*/, '').replace(/\s*```$/, '').trim();
+  // Remove markdown code block syntax if present
+  let cleaned = text.replace(/```json/g, "").replace(/```/g, "");
+  
+  // Locate the first '{' and the last '}' to handle potential preamble/postamble
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+  
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+  
+  return cleaned.trim();
 };
 
 /**
@@ -65,7 +76,15 @@ export const generateRubricFromText = async (
   });
 
   if (!response.text) throw new Error("No response from Gemini");
-  return JSON.parse(cleanJson(response.text)) as Rubric;
+
+  try {
+    const cleaned = cleanJson(response.text);
+    return JSON.parse(cleaned) as Rubric;
+  } catch (e) {
+    console.error("Failed to parse Rubric JSON", e);
+    console.debug("Raw Rubric Response:", response.text);
+    throw new Error("Failed to parse rubric structure. Please try again.");
+  }
 };
 
 /**
@@ -106,7 +125,8 @@ export const evaluateSubmission = async (
     contents: { parts },
     config: {
       responseMimeType: "application/json",
-      // Thinking budget for deep analysis of the PDF content
+      // Thinking budget for deep analysis of the PDF content.
+      // 4096 thinking tokens, leaving remainder of maxOutputTokens for the JSON.
       thinkingConfig: { thinkingBudget: 4096 }, 
       maxOutputTokens: 8192,
       responseSchema: {
@@ -134,7 +154,15 @@ export const evaluateSubmission = async (
   });
 
   if (!response.text) throw new Error("No evaluation generated");
-  return JSON.parse(cleanJson(response.text)) as EvaluationResult;
+
+  try {
+    const cleaned = cleanJson(response.text);
+    return JSON.parse(cleaned) as EvaluationResult;
+  } catch (e) {
+    console.error("Failed to parse Evaluation JSON", e);
+    console.debug("Raw Evaluation Response:", response.text);
+    throw new Error("Failed to parse evaluation result. The model may have been interrupted or produced invalid JSON.");
+  }
 };
 
 /**
