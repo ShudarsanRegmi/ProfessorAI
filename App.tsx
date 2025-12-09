@@ -10,14 +10,17 @@ import {
   ChevronRight,
   BarChart2,
   Cpu,
-  Loader2
+  Loader2,
+  Github,
+  ExternalLink,
+  Code
 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
 import LiveAssistant from './components/LiveAssistant';
 import AudioNotes from './components/AudioNotes';
-import { generateRubricFromText, evaluateSubmission, checkFacts } from './services/geminiService';
-import { AssignmentState, Rubric, StudentSubmission, GroundingResult } from './types';
+import { generateRubricFromText, evaluateSubmission, checkFacts, analyzeCodeRepository } from './services/geminiService';
+import { AssignmentState, Rubric, StudentSubmission, GroundingResult, CodeAnalysis } from './types';
 
 const App: React.FC = () => {
   // --- State ---
@@ -108,7 +111,7 @@ const App: React.FC = () => {
   const runEvaluation = async (submission: StudentSubmission) => {
     if (!assignment.structuredRubric) return;
     
-    // Update status
+    // 1. Initial Document Evaluation
     setSubmissions(prev => prev.map(s => s.id === submission.id ? { ...s, status: 'evaluating' } : s));
 
     try {
@@ -122,6 +125,28 @@ const App: React.FC = () => {
         },
         assignment.structuredRubric
       );
+
+      // Check for Code Links
+      const codeLinks = result.external_links?.filter(l => 
+        l.includes('github.com') || l.includes('gitlab.com') || l.includes('colab.research.google.com')
+      );
+
+      if (codeLinks && codeLinks.length > 0) {
+        // 2. Secondary Code Analysis
+        setSubmissions(prev => prev.map(s => s.id === submission.id ? { 
+            ...s, 
+            status: 'analyzing_code', 
+            evaluation: result 
+        } : s));
+
+        try {
+          // Analyze the first code link found (for this demo)
+          const codeAnalysis = await analyzeCodeRepository(codeLinks[0], assignment.structuredRubric);
+          result.code_analysis = codeAnalysis;
+        } catch (codeErr) {
+           console.error("Code analysis failed but main grading succeeded", codeErr);
+        }
+      }
 
       setSubmissions(prev => prev.map(s => s.id === submission.id ? { 
           ...s, 
@@ -274,7 +299,7 @@ const App: React.FC = () => {
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                    {assignment.structuredRubric?.criteria.map((c, i) => (
+                    {assignment.structuredRubric?.criteria?.map((c, i) => (
                         <tr key={i} className="hover:bg-slate-50/50">
                             <td className="p-4 font-medium text-slate-900">{c.name}</td>
                             <td className="p-4 text-slate-500">{c.weight}</td>
@@ -285,12 +310,61 @@ const App: React.FC = () => {
                     ))}
                 </tbody>
             </table>
-            {!assignment.structuredRubric && (
+            {(!assignment.structuredRubric || !assignment.structuredRubric.criteria || assignment.structuredRubric.criteria.length === 0) && (
                 <div className="p-12 text-center text-slate-400">
-                    No rubric generated yet. Go back to Setup.
+                    No rubric generated yet or rubric is empty. Go back to Setup.
                 </div>
             )}
         </div>
+    </div>
+  );
+
+  const renderCodeAnalysis = (analysis: CodeAnalysis) => (
+    <div className="mt-4 bg-slate-900 text-slate-200 rounded-lg p-4 border border-slate-700">
+        <div className="flex items-start justify-between mb-4 border-b border-slate-700 pb-3">
+            <div>
+                <h4 className="text-sm font-semibold text-indigo-400 flex items-center gap-2">
+                    <Code className="w-4 h-4" />
+                    Deep Code Analysis
+                </h4>
+                <a href={analysis.repo_url} target="_blank" rel="noreferrer" className="text-xs text-slate-500 hover:text-slate-300 flex items-center gap-1 mt-1">
+                    <Github className="w-3 h-3" />
+                    {analysis.repo_url}
+                </a>
+            </div>
+            <div className="text-right">
+                <span className="block text-xl font-bold text-green-400">{analysis.implementation_score} / {analysis.max_score}</span>
+                <span className="text-xs text-slate-500">Implementation Score</span>
+            </div>
+        </div>
+
+        <p className="text-sm text-slate-300 mb-4">{analysis.summary}</p>
+
+        {analysis.evidence && analysis.evidence.length > 0 && (
+            <div className="space-y-3">
+                <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Evidence & Citations</h5>
+                {analysis.evidence.map((ev, i) => (
+                    <div key={i} className="bg-slate-800 rounded p-3 border border-slate-700">
+                        <div className="flex justify-between text-xs text-indigo-300 mb-2">
+                            <span className="font-mono">{ev.file}</span>
+                            <span>Line(s): {ev.line_numbers}</span>
+                        </div>
+                        {ev.snippet && (
+                             <div className="bg-slate-950 p-2 rounded mb-2 overflow-x-auto">
+                                <pre className="text-xs font-mono text-slate-300">{ev.snippet}</pre>
+                             </div>
+                        )}
+                        <p className="text-xs text-slate-400 italic">"{ev.comment}"</p>
+                    </div>
+                ))}
+            </div>
+        )}
+        
+        {analysis.status === 'failed' && (
+             <div className="mt-2 text-xs text-red-400 bg-red-900/20 p-2 rounded">
+                Analysis encountered an error: {analysis.error_message || "Unknown error"}. Scores may be tentative.
+             </div>
+        )}
     </div>
   );
 
@@ -342,7 +416,7 @@ const App: React.FC = () => {
                     <div className="mt-3 bg-white p-3 rounded border border-indigo-100 text-sm">
                         <p className="text-slate-800 mb-2">{groundingResult.text}</p>
                         <div className="flex flex-wrap gap-2">
-                            {groundingResult.sources.map((s, i) => (
+                            {groundingResult.sources?.map((s, i) => (
                                 <a key={i} href={s.uri} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline flex items-center gap-1">
                                     <div className="w-1.5 h-1.5 rounded-full bg-blue-400"></div> {s.title}
                                 </a>
@@ -364,14 +438,34 @@ const App: React.FC = () => {
                             </div>
                             <div>
                                 <h3 className="font-medium text-slate-900">{sub.filename}</h3>
-                                <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                                    sub.status === 'graded' ? 'bg-green-100 text-green-700' :
-                                    sub.status === 'evaluating' ? 'bg-amber-100 text-amber-700' :
-                                    sub.status === 'error' ? 'bg-red-100 text-red-700' :
-                                    'bg-slate-100 text-slate-600'
-                                }`}>
-                                    {sub.status.toUpperCase()}
-                                </span>
+                                <div className="flex items-center gap-2">
+                                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                                        sub.status === 'graded' ? 'bg-green-100 text-green-700' :
+                                        sub.status === 'evaluating' || sub.status === 'analyzing_code' ? 'bg-amber-100 text-amber-700' :
+                                        sub.status === 'error' ? 'bg-red-100 text-red-700' :
+                                        'bg-slate-100 text-slate-600'
+                                    }`}>
+                                        {sub.status === 'analyzing_code' ? 'Checking Code...' : sub.status.toUpperCase()}
+                                    </span>
+                                    
+                                    {/* Link Indicators */}
+                                    {sub.evaluation?.external_links && sub.evaluation.external_links.length > 0 && (
+                                        <div className="flex gap-1">
+                                            {sub.evaluation.external_links.map((link, i) => (
+                                                <a 
+                                                    key={i} 
+                                                    href={link} 
+                                                    target="_blank" 
+                                                    rel="noreferrer"
+                                                    title={link}
+                                                    className="p-1 bg-slate-100 rounded-full hover:bg-slate-200 text-slate-500"
+                                                >
+                                                    {link.includes('github') ? <Github className="w-3 h-3"/> : <ExternalLink className="w-3 h-3"/>}
+                                                </a>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
                             </div>
                         </div>
                         {sub.status === 'graded' ? (
@@ -389,7 +483,7 @@ const App: React.FC = () => {
                         ) : (
                             <div className="flex items-center gap-2 text-amber-600 text-sm">
                                 <Loader2 className="w-4 h-4 animate-spin" />
-                                Gemini Thinking...
+                                {sub.status === 'analyzing_code' ? 'Analyzing Code Repo...' : 'Evaluating PDF...'}
                             </div>
                         )}
                     </div>
@@ -412,7 +506,7 @@ const App: React.FC = () => {
                              <div>
                                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Criteria Breakdown</h4>
                                 <div className="space-y-2">
-                                    {sub.evaluation.criteria.map((c, i) => (
+                                    {sub.evaluation.criteria?.map((c, i) => (
                                         <div key={i} className="flex justify-between items-start text-sm border-b border-slate-50 pb-2 last:border-0">
                                             <div className="flex-1 pr-4">
                                                 <span className="font-medium text-slate-800 block">{c.name}</span>
@@ -425,6 +519,9 @@ const App: React.FC = () => {
                                     ))}
                                 </div>
                              </div>
+
+                             {/* Code Analysis Component */}
+                             {sub.evaluation.code_analysis && renderCodeAnalysis(sub.evaluation.code_analysis)}
                         </div>
                     )}
                 </div>
